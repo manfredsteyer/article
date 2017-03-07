@@ -1,6 +1,6 @@
 # Server Side Rendering with Angular 4
 
-> **Big thanks** to [Rob Wormald](https://twitter.com/robwormald) who provided an [example that helped me to understand how server side rendering can be used in Angular 4](https://github.com/robwormald/ng-universal-demo/), answered some open questions and took the time to review the article. 
+> **Big thanks** to [Rob Wormald](https://twitter.com/robwormald) who provided an [example that helped me to understand how server side rendering can be used in Angular 4](https://github.com/robwormald/ng-universal-demo/), answered some open questions and took the time to review the article. Further big thanks to my buddy [Hans-Peter Grahsl](https://twitter.com/hpgrahsl?lang=de) who helped me to improve this article.
 
 Especially for consumer apps, the server side prerendering brings back the benefits of classical web sites without forgoing the advantages of modern JavaScript solutions. It leads to faster loading times and so to higher conversion rates. It also allows for social links with previews of a web site and it might even help with SEO as search engines are dealing with server side rendered content since more then two decades. Saying that, search engines like Google are becoming better more and more when it comes to indexing JavaScript solutions. 
 
