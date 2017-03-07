@@ -1,0 +1,300 @@
+# Server Side Rendering with Angular 4
+
+> **Big thanks** to [Rob Wormald](https://twitter.com/robwormald) who provided an [example that helped me to understand how server side rendering can be used in Angular 4](https://github.com/robwormald/ng-universal-demo/), answered some open questions and took the time to review the article. 
+
+Especially for consumer apps, the server side prerendering brings back the benefits of classical web sites without forgoing the advantages of modern JavaScript solutions. It leads to faster loading times and so to higher conversion rates. It also allows for social links with previews of a web site and it might even help with SEO as search engines are dealing with server side rendered content since more then two decades. Saying that, search engines like Google are becoming better more and more when it comes to indexing JavaScript solutions. 
+
+Since its first days, Angular is supporting this option. For Version 2 one could use the community project [Angular Universal](https://universal.angular.io/). As server side rendering is considered a strategic feature for Google's SPA-Flagship, the product team decided to include a refactored version directly into the framework. Beginning with Angular 4, this version is available.
+
+In this article I'm describing the necessary steps to extend an existing Angular 4 application with server side rendering. For this, I'm using a [webpack](https://github.com/webpack/webpack) configuration that has been generated with the [Angular CLI](https://cli.angular.io/). The [whole example](https://github.com/manfredsteyer/angular-ssr) can be found [here](https://github.com/manfredsteyer/angular-ssr).
+
+> Server side rendering brings additional complexity to a solution. Therefore, I would recommend to only use it when one needs its advantages.
+
+## Ejecting the Angular CLI
+
+If you are using the Angular CLI you have to eject it, to get the possibility to adopt your build process by leveraging webpack:
+
+```
+ng eject
+```
+
+> Make sure to know the [consequences](https://github.com/angular/angular-cli/wiki/eject) before ejecting the CLI. 
+
+The CLI version I've used for this article did not include the ``Uglyfy``-Plugin which removes code webpack marks as unused. In addition to that, it sets the ``AotPlugin``'s flag ``skipCodeGeneration`` to ``true`` which prevents AOT. In order to enable these options, I've modified the generated ``webpack.config.js``:
+
+```
+[...]
+"plugins": [
+	[...],
+	new AotPlugin({
+	  "mainPath": "src/main.ts",
+	  "hostReplacementPaths": {
+	    "environments\\environment.ts": "environments\\environment.ts"
+	  },
+	  "exclude": [],
+	  "tsConfigPath": "tsconfig.json",
+	
+	  // Set flag to false to allow AOT
+	  "skipCodeGeneration": false
+	}),
+	
+	// Add UgilyJsPlugin
+	new webpack.optimize.UglifyJsPlugin()
+]
+[...]
+```
+
+While AOT is not necessary for server side rendering, using both together totally makes sense since both options address the application's loading time.
+
+
+## Necessary Packages
+
+The solution presented here uses [Node.js](https://nodejs.org/en/) with [Express](http://expressjs.com/) on server side. Therefore I've downloaded the package ``express`` together with typings for it (``@types/express``) as well as ``@angular/platform-server``: 
+
+```
+npm i @angular/platform-server@4.0.0-rc.2 --save
+npm i express --save
+npm i @types/express --save-dev
+```
+
+One should make sure to get the version of ``@angular/platform-server`` that fits to the other used Angular packages. In my case, it was the version ``4.0.0-rc.2``. 
+
+
+## Creating a Root Module for Server Side Rendering
+
+To leverage server side rendering, one needs a root module that includes the new ``ServerModule``. According to [Rob Wormald's example](https://github.com/robwormald/ng-universal-demo/), I also included the root module I'm using for rendering within the browser. This allows me to align with the DRY principle without the need to refactor the existing module structure:
+
+```
+// app.server.module.ts
+
+import { NgModule } from '@angular/core';
+import { ServerModule } from '@angular/platform-server';
+import { AppModule } from './app.module';
+import { AppComponent } from './app.component';
+
+@NgModule({
+  imports: [
+	  ServerModule,
+	  AppModule
+  ],
+  bootstrap: [
+	  AppComponent
+  ],
+  providers: [ ]
+})
+export class AppServerModule {}
+```
+
+Furthermore, the client side root module includes the ``BrowserModule`` by calling its static ``withServerTransition`` method. This method demands an id for the application in question:
+
+```
+// app.module.ts
+
+@NgModule({
+    imports: [
+        BrowserModule.withServerTransition({
+            appId: 'demo-app'
+        }),
+        HttpModule,
+        FormsModule,
+	    [...]
+    ],
+    [...]
+})
+export class AppModule {
+}
+```
+
+## AOT for the server side
+
+As the CLI and its ``AotPlugin`` did not support AOT for server side code at the time writing, the example directly uses the Angular Compiler. To configure it, I've created a copy of the file ``tsconfig.json`` with the name ``tsconfig.server.json``. This file contains the following ``angularCompilerOptions``:
+
+```
+"compilerOptions": {
+    [...]
+},
+[...]
+"angularCompilerOptions": {
+  "genDir": "src/aot",
+  "entryModule": "./src/app.server.module#AppServerModule"
+}
+```
+
+The npm script ``ngc:server`` within the file ``package.json`` calls the Angular Compiler:
+
+```
+[...]
+"scripts": {
+    [...]
+    "ngc:server": "ngc -p tsconfig.server.json"
+}
+[...]
+```
+
+After calling this script (``npm run ngc:server``) the compiler creates the usual additional TypeScript files for the project. Using the ``AppServerModuleNgFactory`` that has been created for the server side root module ``AppServerModule``, the file ``main.server.ts`` is starting up a node process which takes care of prerendering:
+
+```
+// main.server.ts
+// Modified version of equivalent file in 
+// https://github.com/robwormald/ng-universal-demo/
+
+import 'zone.js/dist/zone-node';
+import { platformServer, renderModuleFactory } from '@angular/platform-server';
+import { enableProdMode } from '@angular/core';
+import { AppServerModule } from './app/app.server.module';
+import { AppServerModuleNgFactory } from './aot/src/app/app.server.module.ngfactory';
+import * as express from 'express';
+import {ngExpressEngine} from './express-engine';
+
+enableProdMode();
+
+const app = express();
+
+app.engine('html', ngExpressEngine({
+	baseUrl: 'http://localhost:8000',
+	bootstrap: [AppServerModuleNgFactory],
+}));
+
+app.set('view engine', 'html');
+app.set('views', '.')
+
+app.get('/', (req, res) => {
+	res.render('index', {req});
+});
+
+app.get('/home*', (req, res) => {
+	res.render('index', {req});
+});
+
+app.get('/flight-booking*', (req, res) => {
+	res.render('index', {req});
+});
+
+app.get('/passenger*', (req, res) => {
+	res.render('index', {req});
+});
+
+app.get('/history*', (req, res) => {
+	res.render('index', {req});
+});
+
+app.use(express.static('.'));
+
+app.listen(8000,() => {
+	console.log('listening...');
+});
+```
+
+
+Please note, that these server side routes not only allow for prerendering specific parts of the Angular application but also return static files, like the bundles used on client side. 
+
+This file is a modified version of a similar file in Rob's example. In addition, I took his express engine that kicks in prerendering:
+
+```
+// express-engine.ts
+// Taken from https://github.com/robwormald/ng-universal-demo/
+
+import { renderModuleFactory } from '@angular/platform-server';
+
+import * as fs from 'fs';
+import * as path from 'path';
+
+const templateCache  = {};
+
+export function ngExpressEngine(setupOptions){
+
+	return function(filePath, options, callback){
+		if(!templateCache[filePath]){
+			let file = fs.readFileSync(filePath);
+			templateCache[filePath] = file.toString();
+		}
+		renderModuleFactory(setupOptions.bootstrap[0], {
+			document: templateCache[filePath],
+			url: options.req.url
+		})
+		.then(string => {
+			callback(null, string);
+		});
+	}
+}
+```
+
+## Webpack configuration for server side rendering
+
+To build the server side version, the example uses a copy of the existing ``webpack.config.js`` with the name ``webpack.server.js``. Of course, in a real world project it would be a good idea to avoid a duplication of (configuration) code but for this demonstration it seems to be ok. 
+
+This configuration uses the target ``node`` in order to get a bundle for the server side and just one entry point:
+
+```
+  // main.server.ts
+  
+  [...]
+  target: 'node',
+  [...]
+  "entry": {
+    "main": [
+      "./src/main.server.ts"
+    ]
+  },
+```
+
+As the solution is using just one bundle, I've also removed the two usages of the ``CommonsChunkPlugin``. In order to make experimenting easier, I've removed the ``NoEmitOnErrorsPlugin`` too.
+
+In order to prevent webpack from overwriting the client side version, the configuration in question uses the name scheme ``xyz.server.bundle.js`` for the bundles generated:
+
+```
+  "output": {
+    "path": path.join(process.cwd(), "dist"),
+    "filename": "[name].server.bundle.js",
+    "chunkFilename": "[id].server.chunk.js"
+  },
+```
+
+To prevent some issues the solution leverages the ``AotPlugin`` in addition to directly using the Angular Compiler:
+
+```
+new AotPlugin({
+  "entryModule": __dirname + "/src/app/app.server.module.ts#AppServerModule",
+  "hostReplacementPaths": {
+    "environments\\environment.ts": "environments\\environment.ts"
+  },
+  "exclude": [],
+  "tsConfigPath": "./tsconfig.server.json",
+  "skipCodeGeneration": false
+}),
+```
+
+## Build scripts
+
+For creating a build which involves using the Angular Compiler and starting webpack, the example uses some npm scripts within the file ``package.json``:
+
+```
+"scripts": {
+	[...]
+	"build": "npm run build:client",
+	"build:client": "webpack",
+	"build:server": "ngc -p tsconfig.server.json && webpack --progress --config webpack.server.config.js",
+	"build:all": "npm run build:client && npm run build:server",
+	[...]
+}
+```
+
+After defining those scripts, one can call ``npm run build:all`` to build the application for both, the client side as well as the server side.
+
+## Starting
+
+After building the application, one can switch to the ``dist`` folder and start the server.
+
+```
+cd dist
+node main.server.bundle.js
+```
+
+This makes the application available via ``http://localhost:8000``. The server prerenders the requested view. To follow that, just temporarily turn off JavaScript and see that you can at least navigate through the menu items (forms don't work without JavaScript). In addition to server side prerendering, Angular kicks in on client side after it has been loaded.
+
+## Further Thoughts
+
+There are two more things, I've discussed with [Rob Wormald](https://twitter.com/robwormald). The first one is about transmitting the server side state to the client. Especially if the server fetches data from a Web API, it would come in handy to directly transfer the resulting state to the client. This prevents the client code from fetching the very same data once again after it kicks in. For this, Rob suggest the usage of something like a Redux Store (see [ngrx/Store](https://github.com/ngrx/store)) which can easily be transferred as a JOSN-based "data island" to the client. I totally think this thoughts are worth at least further articles. 
+
+The second part of our conversation was about the fact, that the server rendered view is replaced with its client side counterpart after Angular kicks in within the browser. This means that the application state is reset which also affects data the user has entered into forms so far. The solution in Angular 4 doesn't prevent this and we agreed that such an undertaking is quite challenging. Therefore, it seems to be a good idea to go with an use case specific solution for this. This can involve writing the application in a way that prevents such situations as well as leveraging own or community based solutions that fit to the use case in question.
+
